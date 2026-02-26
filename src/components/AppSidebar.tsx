@@ -1,7 +1,5 @@
-import { FilePlus, History, LogOut, GraduationCap } from "lucide-react";
+import { FilePlus, History, GraduationCap } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
-import { useAuth } from "@/contexts/AuthContext";
-import { useNavigate } from "react-router-dom";
 import {
   Sidebar,
   SidebarContent,
@@ -10,7 +8,6 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
-  SidebarTrigger,
 } from "@/components/ui/sidebar";
 
 const navItems = [
@@ -19,14 +16,6 @@ const navItems = [
 ];
 
 export function AppSidebar() {
-  const { signOut } = useAuth();
-  const navigate = useNavigate();
-
-  const handleLogout = async () => {
-    await signOut();
-    navigate("/auth");
-  };
-
   return (
     <Sidebar className="border-r-0">
       <div className="flex h-16 items-center gap-3 px-4">
@@ -62,16 +51,6 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
-
-      <div className="mt-auto border-t border-sidebar-border p-2">
-        <button
-          onClick={handleLogout}
-          className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-sidebar-foreground/60 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-        >
-          <LogOut className="h-4 w-4" />
-          <span>Logout</span>
-        </button>
-      </div>
     </Sidebar>
   );
 }
