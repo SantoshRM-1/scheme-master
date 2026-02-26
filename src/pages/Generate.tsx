@@ -2,14 +2,17 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { toast } from "sonner";
-import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
-import { Loader2, Upload, FileText, Sparkles, Download } from "lucide-react";
+import { Loader2, Upload, FileText, Sparkles, Download, X, AlertTriangle } from "lucide-react";
 import { generatePDF } from "@/lib/pdfExport";
+
+interface UploadedFile {
+  name: string;
+  content: string;
+}
 
 interface GeneratedResult {
   questions: {
@@ -19,73 +22,90 @@ interface GeneratedResult {
   }[];
 }
 
+function extractKeywords(text: string): Set<string> {
+  const stopWords = new Set(["the","a","an","is","are","was","were","be","been","being","have","has","had","do","does","did","will","would","shall","should","may","might","can","could","of","in","to","for","with","on","at","from","by","about","as","into","through","during","before","after","above","below","between","out","off","over","under","again","further","then","once","and","but","or","nor","not","so","yet","both","either","neither","each","every","all","any","few","more","most","other","some","such","no","only","own","same","than","too","very","just","because","if","when","where","how","what","which","who","whom","this","that","these","those","it","its"]);
+  return new Set(
+    text.toLowerCase().replace(/[^a-z0-9\s]/g, "").split(/\s+/).filter(w => w.length > 3 && !stopWords.has(w))
+  );
+}
+
+function checkKeywordMatch(qpTexts: string[], tbTexts: string[]): boolean {
+  const qpKeywords = extractKeywords(qpTexts.join(" "));
+  const tbKeywords = extractKeywords(tbTexts.join(" "));
+  if (qpKeywords.size === 0) return true;
+  let matchCount = 0;
+  qpKeywords.forEach(k => { if (tbKeywords.has(k)) matchCount++; });
+  return matchCount / qpKeywords.size > 0.15;
+}
+
 export default function Generate() {
-  const { user } = useAuth();
-  const [questionPaper, setQuestionPaper] = useState("");
-  const [textbook, setTextbook] = useState("");
+  const [qpFiles, setQpFiles] = useState<UploadedFile[]>([]);
+  const [tbFiles, setTbFiles] = useState<UploadedFile[]>([]);
   const [marksConfig, setMarksConfig] = useState("10");
   const [templateType, setTemplateType] = useState("simple");
   const [paperName, setPaperName] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<GeneratedResult | null>(null);
+  const [mismatchWarning, setMismatchWarning] = useState(false);
 
-  const handleFileUpload = async (
-    e: React.ChangeEvent<HTMLInputElement>,
-    setter: (v: string) => void
-  ) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    if (file.type === "text/plain") {
-      const text = await file.text();
-      setter(text);
-    } else if (file.type === "application/pdf") {
-      toast.info("PDF text extraction is handled during generation.");
-      const reader = new FileReader();
-      reader.onload = () => {
-        const base64 = (reader.result as string).split(",")[1];
-        setter(`[PDF_BASE64]${base64}`);
-      };
-      reader.readAsDataURL(file);
-    } else {
-      toast.error("Please upload a .txt or .pdf file");
+  const handleFilesUpload = async (e: React.ChangeEvent<HTMLInputElement>, setter: React.Dispatch<React.SetStateAction<UploadedFile[]>>) => {
+    const files = e.target.files;
+    if (!files) return;
+    const newFiles: UploadedFile[] = [];
+    for (const file of Array.from(files)) {
+      if (file.type === "text/plain") {
+        newFiles.push({ name: file.name, content: await file.text() });
+      } else if (file.type === "application/pdf") {
+        const reader = new FileReader();
+        const content = await new Promise<string>((resolve) => {
+          reader.onload = () => resolve(`[PDF_BASE64]${(reader.result as string).split(",")[1]}`);
+          reader.readAsDataURL(file);
+        });
+        newFiles.push({ name: file.name, content });
+      } else {
+        toast.error(`Unsupported file: ${file.name}. Use .txt or .pdf`);
+      }
     }
+    setter(prev => [...prev, ...newFiles]);
+    e.target.value = "";
+  };
+
+  const removeFile = (setter: React.Dispatch<React.SetStateAction<UploadedFile[]>>, index: number) => {
+    setter(prev => prev.filter((_, i) => i !== index));
   };
 
   const handleGenerate = async () => {
-    if (!questionPaper.trim()) {
-      toast.error("Please upload or paste your question paper");
-      return;
-    }
-    if (!textbook.trim()) {
-      toast.error("Please upload or paste your textbook content");
-      return;
-    }
+    if (qpFiles.length === 0) { toast.error("Please upload at least one question paper"); return; }
+    if (tbFiles.length === 0) { toast.error("Please upload at least one textbook/reference file"); return; }
+
+    // Keyword mismatch check
+    const qpTexts = qpFiles.map(f => f.content.startsWith("[PDF_BASE64]") ? "" : f.content);
+    const tbTexts = tbFiles.map(f => f.content.startsWith("[PDF_BASE64]") ? "" : f.content);
+    const matched = checkKeywordMatch(qpTexts, tbTexts);
+    setMismatchWarning(!matched);
 
     setLoading(true);
     try {
-      const { data, error } = await supabase.functions.invoke("generate-scheme", {
-        body: {
-          questionPaper,
-          textbook,
-          marksPerQuestion: parseInt(marksConfig) || 10,
-          templateType,
-        },
-      });
+      const questionPaper = qpFiles.map(f => f.content).join("\n\n--- NEXT FILE ---\n\n");
+      const textbook = tbFiles.map(f => f.content).join("\n\n--- NEXT FILE ---\n\n");
 
+      const { data, error } = await supabase.functions.invoke("generate-scheme", {
+        body: { questionPaper, textbook, marksPerQuestion: parseInt(marksConfig) || 10, templateType },
+      });
       if (error) throw error;
 
       const generatedContent = data.result;
       setResult(generatedContent);
 
-      // Save to database
+      const fileNames = { questionPapers: qpFiles.map(f => f.name), textbooks: tbFiles.map(f => f.name) };
       await supabase.from("generated_papers").insert({
-        user_id: user!.id,
+        user_id: null,
         question_paper_name: paperName || "Untitled Paper",
         template_type: templateType,
         marks_config: marksConfig,
         generated_content: generatedContent,
-      });
+        file_names: fileNames,
+      } as any);
 
       toast.success("Scheme and solutions generated successfully!");
     } catch (error: any) {
@@ -106,15 +126,13 @@ export default function Generate() {
     <div className="mx-auto max-w-4xl animate-fade-in">
       <div className="mb-6">
         <h1 className="font-serif text-3xl text-foreground">Generate New</h1>
-        <p className="mt-1 text-muted-foreground">Upload your question paper and textbook to generate marking schemes and solutions.</p>
+        <p className="mt-1 text-muted-foreground">Upload question papers and textbook content to generate marking schemes and solutions.</p>
       </div>
 
       <div className="grid gap-6">
         {/* Configuration */}
         <Card>
-          <CardHeader>
-            <CardTitle className="font-serif text-lg">Configuration</CardTitle>
-          </CardHeader>
+          <CardHeader><CardTitle className="font-serif text-lg">Configuration</CardTitle></CardHeader>
           <CardContent className="grid gap-4 sm:grid-cols-3">
             <div className="space-y-2">
               <Label>Paper Name</Label>
@@ -129,7 +147,7 @@ export default function Generate() {
               <Select value={templateType} onValueChange={setTemplateType}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="vtu">VTU Format</SelectItem>
+                  <SelectItem value="vtu">University Format</SelectItem>
                   <SelectItem value="autonomous">Autonomous College Format</SelectItem>
                   <SelectItem value="simple">Simple Exam Format</SelectItem>
                 </SelectContent>
@@ -138,59 +156,35 @@ export default function Generate() {
           </CardContent>
         </Card>
 
-        {/* Question Paper */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 font-serif text-lg">
-              <FileText className="h-5 w-5 text-primary" />
-              Question Paper
-            </CardTitle>
-            <CardDescription>Upload a PDF/text file or paste the content directly.</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="flex items-center gap-3">
-              <Label htmlFor="qp-upload" className="flex cursor-pointer items-center gap-2 rounded-lg border border-dashed border-border bg-muted/50 px-4 py-2.5 text-sm text-muted-foreground transition-colors hover:bg-muted">
-                <Upload className="h-4 w-4" /> Upload File
-              </Label>
-              <input id="qp-upload" type="file" accept=".pdf,.txt" className="hidden" onChange={(e) => handleFileUpload(e, setQuestionPaper)} />
-              {questionPaper && <span className="text-xs text-accent">Content loaded</span>}
-            </div>
-            <Textarea
-              value={questionPaper.startsWith("[PDF_BASE64]") ? "(PDF content loaded)" : questionPaper}
-              onChange={(e) => setQuestionPaper(e.target.value)}
-              placeholder="Or paste your question paper text here..."
-              rows={6}
-              disabled={questionPaper.startsWith("[PDF_BASE64]")}
-            />
-          </CardContent>
-        </Card>
+        {/* Question Paper Files */}
+        <FileUploadCard
+          title="Question Papers"
+          description="Upload one or more PDF/text files containing questions."
+          files={qpFiles}
+          inputId="qp-upload"
+          onUpload={(e) => handleFilesUpload(e, setQpFiles)}
+          onRemove={(i) => removeFile(setQpFiles, i)}
+        />
 
-        {/* Textbook */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 font-serif text-lg">
-              <FileText className="h-5 w-5 text-primary" />
-              Textbook Content
-            </CardTitle>
-            <CardDescription>Upload a PDF/text file or paste the relevant textbook content.</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="flex items-center gap-3">
-              <Label htmlFor="tb-upload" className="flex cursor-pointer items-center gap-2 rounded-lg border border-dashed border-border bg-muted/50 px-4 py-2.5 text-sm text-muted-foreground transition-colors hover:bg-muted">
-                <Upload className="h-4 w-4" /> Upload File
-              </Label>
-              <input id="tb-upload" type="file" accept=".pdf,.txt" className="hidden" onChange={(e) => handleFileUpload(e, setTextbook)} />
-              {textbook && <span className="text-xs text-accent">Content loaded</span>}
-            </div>
-            <Textarea
-              value={textbook.startsWith("[PDF_BASE64]") ? "(PDF content loaded)" : textbook}
-              onChange={(e) => setTextbook(e.target.value)}
-              placeholder="Or paste your textbook content here..."
-              rows={6}
-              disabled={textbook.startsWith("[PDF_BASE64]")}
-            />
-          </CardContent>
-        </Card>
+        {/* Textbook Files */}
+        <FileUploadCard
+          title="Textbook / Reference Content"
+          description="Upload one or more PDF/text files as reference material."
+          files={tbFiles}
+          inputId="tb-upload"
+          onUpload={(e) => handleFilesUpload(e, setTbFiles)}
+          onRemove={(i) => removeFile(setTbFiles, i)}
+        />
+
+        {/* Mismatch Warning */}
+        {mismatchWarning && (
+          <div className="flex items-start gap-3 rounded-lg border border-warning/40 bg-warning/10 p-4 text-sm">
+            <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-warning" />
+            <p className="text-foreground">
+              <strong>Warning:</strong> Uploaded textbook may not match the question paper. Results may be inaccurate.
+            </p>
+          </div>
+        )}
 
         {/* Generate Button */}
         <Button onClick={handleGenerate} disabled={loading} size="lg" className="w-full">
@@ -239,5 +233,49 @@ export default function Generate() {
         )}
       </div>
     </div>
+  );
+}
+
+function FileUploadCard({ title, description, files, inputId, onUpload, onRemove }: {
+  title: string;
+  description: string;
+  files: UploadedFile[];
+  inputId: string;
+  onUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onRemove: (index: number) => void;
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 font-serif text-lg">
+          <FileText className="h-5 w-5 text-primary" />
+          {title}
+        </CardTitle>
+        <CardDescription>{description}</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div>
+          <Label htmlFor={inputId} className="flex cursor-pointer items-center gap-2 rounded-lg border border-dashed border-border bg-muted/50 px-4 py-2.5 text-sm text-muted-foreground transition-colors hover:bg-muted">
+            <Upload className="h-4 w-4" /> Upload Files
+          </Label>
+          <input id={inputId} type="file" accept=".pdf,.txt" multiple className="hidden" onChange={onUpload} />
+        </div>
+        {files.length > 0 && (
+          <ul className="space-y-1.5">
+            {files.map((f, i) => (
+              <li key={i} className="flex items-center justify-between rounded-md border border-border bg-muted/30 px-3 py-2 text-sm">
+                <span className="flex items-center gap-2 truncate text-foreground">
+                  <FileText className="h-3.5 w-3.5 shrink-0 text-primary" />
+                  {f.name}
+                </span>
+                <button onClick={() => onRemove(i)} className="ml-2 rounded p-0.5 text-muted-foreground hover:text-destructive">
+                  <X className="h-4 w-4" />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
   );
 }

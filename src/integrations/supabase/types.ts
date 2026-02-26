@@ -17,30 +17,33 @@ export type Database = {
       generated_papers: {
         Row: {
           created_at: string
+          file_names: Json | null
           generated_content: Json | null
           id: string
           marks_config: string | null
           question_paper_name: string
           template_type: string
-          user_id: string
+          user_id: string | null
         }
         Insert: {
           created_at?: string
+          file_names?: Json | null
           generated_content?: Json | null
           id?: string
           marks_config?: string | null
           question_paper_name?: string
           template_type?: string
-          user_id: string
+          user_id?: string | null
         }
         Update: {
           created_at?: string
+          file_names?: Json | null
           generated_content?: Json | null
           id?: string
           marks_config?: string | null
           question_paper_name?: string
           template_type?: string
-          user_id?: string
+          user_id?: string | null
         }
         Relationships: []
       }

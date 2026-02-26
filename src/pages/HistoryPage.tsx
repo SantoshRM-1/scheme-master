@@ -1,10 +1,9 @@
 import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { useAuth } from "@/contexts/AuthContext";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Download, FileText, Clock } from "lucide-react";
+import { Download, FileText, Clock, Trash2 } from "lucide-react";
 import { generatePDF } from "@/lib/pdfExport";
 import { toast } from "sonner";
 
@@ -14,41 +13,42 @@ interface Paper {
   template_type: string;
   marks_config: string;
   generated_content: any;
+  file_names: any;
   created_at: string;
 }
 
 const templateLabels: Record<string, string> = {
-  vtu: "VTU Format",
+  vtu: "University Format",
   autonomous: "Autonomous College",
   simple: "Simple Exam",
 };
 
 export default function HistoryPage() {
-  const { user } = useAuth();
   const [papers, setPapers] = useState<Paper[]>([]);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!user) return;
-    const fetchPapers = async () => {
-      const { data, error } = await supabase
-        .from("generated_papers")
-        .select("*")
-        .order("created_at", { ascending: false });
-      if (error) {
-        toast.error("Failed to load history");
-      } else {
-        setPapers(data || []);
-      }
-      setLoading(false);
-    };
-    fetchPapers();
-  }, [user]);
+  const fetchPapers = async () => {
+    const { data, error } = await supabase
+      .from("generated_papers")
+      .select("*")
+      .order("created_at", { ascending: false });
+    if (error) toast.error("Failed to load history");
+    else setPapers((data as any) || []);
+    setLoading(false);
+  };
+
+  useEffect(() => { fetchPapers(); }, []);
 
   const handleDownload = (paper: Paper) => {
     generatePDF(paper.generated_content, paper.question_paper_name, paper.template_type);
     toast.success("PDF downloaded!");
+  };
+
+  const handleDelete = async (id: string) => {
+    const { error } = await supabase.from("generated_papers").delete().eq("id", id);
+    if (error) toast.error("Failed to delete");
+    else { setPapers(prev => prev.filter(p => p.id !== id)); toast.success("Deleted"); }
   };
 
   if (loading) {
@@ -84,7 +84,7 @@ export default function HistoryPage() {
                     <FileText className="h-4 w-4 text-primary" />
                     {paper.question_paper_name}
                   </CardTitle>
-                  <CardDescription className="mt-1 flex items-center gap-3 text-xs">
+                  <CardDescription className="mt-1 flex flex-wrap items-center gap-3 text-xs">
                     <span className="flex items-center gap-1">
                       <Clock className="h-3 w-3" />
                       {new Date(paper.created_at).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
@@ -93,6 +93,16 @@ export default function HistoryPage() {
                       {templateLabels[paper.template_type] || paper.template_type}
                     </Badge>
                   </CardDescription>
+                  {paper.file_names && (
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {(paper.file_names as any)?.questionPapers?.map((n: string, i: number) => (
+                        <Badge key={`qp-${i}`} variant="outline" className="text-xs font-normal">QP: {n}</Badge>
+                      ))}
+                      {(paper.file_names as any)?.textbooks?.map((n: string, i: number) => (
+                        <Badge key={`tb-${i}`} variant="outline" className="text-xs font-normal">TB: {n}</Badge>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <div className="flex gap-2">
                   <Button variant="ghost" size="sm" onClick={() => setExpanded(expanded === paper.id ? null : paper.id)}>
@@ -100,6 +110,9 @@ export default function HistoryPage() {
                   </Button>
                   <Button variant="outline" size="sm" onClick={() => handleDownload(paper)}>
                     <Download className="mr-1 h-3 w-3" /> PDF
+                  </Button>
+                  <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive" onClick={() => handleDelete(paper.id)}>
+                    <Trash2 className="h-3.5 w-3.5" />
                   </Button>
                 </div>
               </CardHeader>
